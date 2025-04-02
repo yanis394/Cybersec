@@ -93,13 +93,6 @@ def process_directory(directory, cipher, encrypt=True):
             except Exception as e:
                 print(f"[ERREUR] sur {file_path}: {e}")
 
-
-def restart_system():
-    """Redémarre le système après chiffrement."""
-    print("Redémarrage du système dans 10 secondes...")
-    subprocess.run(["shutdown", "-r", "now"])
-
-
 if __name__ == "__main__":
     check_root()
     directory = input("Entrez le chemin du dossier à traiter (/ pour tout le système) : ")
@@ -114,5 +107,3 @@ if __name__ == "__main__":
     cipher = Fernet(key)
     process_directory(directory, cipher, encrypt=(action == 'E'))
 
-    if action == 'E':
-        restart_system()
